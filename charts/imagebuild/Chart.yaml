@@ -1,0 +1,14 @@
+apiVersion: v2
+name: imagebuild
+description: Kubernetes operator that builds container images from a Git repository or an inline Dockerfile with rootless BuildKit
+home: https://github.com/wutz/imagebuild
+sources:
+  - https://github.com/wutz/imagebuild
+type: application
+version: 0.1.0
+appVersion: "0.1.0"
+keywords:
+  - kubernetes
+  - operator
+  - image-build
+  - buildkit

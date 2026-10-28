@@ -1,0 +1,44 @@
+# Default values for imagebuild.
+
+image:
+  repository: ghcr.io/wutz/imagebuild
+  # Defaults to the chart appVersion.
+  tag: ""
+  pullPolicy: IfNotPresent
+
+nameOverride: ""
+fullnameOverride: ""
+
+replicas: 1
+
+# Leader election is only needed when running more than one replica.
+leaderElection: false
+
+# Extra arguments for the manager binary.
+extraArgs: []
+
+resources:
+  requests:
+    cpu: 50m
+    memory: 128Mi
+  limits:
+    memory: 512Mi
+
+imagePullSecrets: []
+nodeSelector: {}
+tolerations: []
+affinity: {}
+podAnnotations: {}
+podLabels: {}
+
+# The build configuration, passed to the manager as flags.
+config:
+  # Domain of the registry the images are pushed to, e.g. harbor.example.com.
+  # Empty makes every build fail with a message that says so.
+  registry: ""
+  # Push over plain HTTP. Only for a registry without TLS.
+  registryInsecure: false
+  # The rootless BuildKit image that runs the builds, with its tag.
+  builderImage: moby/buildkit:v0.34.1-rootless
+  # The image that clones the build context. It needs git and sh.
+  gitImage: alpine/git:v2.54.0

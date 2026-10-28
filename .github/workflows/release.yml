@@ -1,0 +1,123 @@
+name: Release
+
+# Publishes the operator image and its Helm chart for a
+# v<major>.<minor>.<patch> tag:
+#   ghcr.io/wutz/fileserver:<version>
+#   oci://ghcr.io/wutz/charts/fileserver:<version>
+# The chart's default image is the one above.
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions: {}
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  image:
+    name: Publish the operator image
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - name: Clone the code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Resolve version
+        id: version
+        env:
+          REF_NAME: ${{ github.ref_name }}
+        run: |
+          version="${REF_NAME#v}"
+          if [[ ! "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "Version $version is not of the form MAJOR.MINOR.PATCH" >&2
+            exit 1
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+      - name: Setup Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+
+      # The prebuilt binary, not go install, so the toolchain is not rebuilt.
+      - name: Install ko
+        env:
+          KO_VERSION: 0.19.1
+        run: |
+          dir="$(mktemp -d)"
+          cd "$dir"
+          base="https://github.com/ko-build/ko/releases/download/v${KO_VERSION}"
+          archive="ko_${KO_VERSION}_Linux_x86_64.tar.gz"
+          curl -fsSLO "$base/$archive"
+          curl -fsSLO "$base/checksums.txt"
+          grep " $archive\$" checksums.txt | sha256sum -c -
+          tar -xzf "$archive" ko
+          sudo install -m 0755 ko /usr/local/bin/ko
+          ko version
+
+      - name: Log in to ghcr.io
+        env:
+          GITHUB_ACTOR: ${{ github.actor }}
+          GITHUB_TOKEN: ${{ github.token }}
+        run: printf '%s' "$GITHUB_TOKEN" | ko login ghcr.io --username "$GITHUB_ACTOR" --password-stdin
+
+      # --bare pushes to KO_DOCKER_REPO itself, so the image is ghcr.io/wutz/fileserver.
+      - name: Build and push the image
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+          KO_DOCKER_REPO: ghcr.io/wutz/fileserver
+        run: ko build --bare --sbom=none --platform=linux/amd64,linux/arm64 --tags "$VERSION" ./cmd
+
+  chart:
+    name: Publish the Helm chart
+    needs: image
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - name: Clone the code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Resolve version
+        id: version
+        env:
+          REF_NAME: ${{ github.ref_name }}
+        run: |
+          version="${REF_NAME#v}"
+          if [[ ! "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "Version $version is not of the form MAJOR.MINOR.PATCH" >&2
+            exit 1
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+      - name: Lint the chart
+        run: make helm-lint
+
+      - name: Package the chart
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: make helm-package CHART_VERSION="$VERSION"
+
+      - name: Log in to ghcr.io
+        env:
+          GITHUB_ACTOR: ${{ github.actor }}
+          GITHUB_TOKEN: ${{ github.token }}
+        run: printf '%s' "$GITHUB_TOKEN" | helm registry login ghcr.io --username "$GITHUB_ACTOR" --password-stdin
+
+      - name: Push the chart
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: make helm-push CHART_VERSION="$VERSION"

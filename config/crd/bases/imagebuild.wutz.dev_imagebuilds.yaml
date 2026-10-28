@@ -1,0 +1,170 @@
+---
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  annotations:
+    controller-gen.kubebuilder.io/version: v0.22.0
+  name: imagebuilds.imagebuild.wutz.dev
+spec:
+  group: imagebuild.wutz.dev
+  names:
+    categories:
+    - imagebuild
+    kind: ImageBuild
+    listKind: ImageBuildList
+    plural: imagebuilds
+    shortNames:
+    - imb
+    singular: imagebuild
+  scope: Namespaced
+  versions:
+  - additionalPrinterColumns:
+    - jsonPath: .status.phase
+      name: Phase
+      type: string
+    - jsonPath: .spec.destination.repository
+      name: Repository
+      type: string
+    - jsonPath: .metadata.creationTimestamp
+      name: Age
+      type: date
+    name: v1alpha1
+    schema:
+      openAPIV3Schema:
+        description: |-
+          ImageBuild builds an image from a Dockerfile with BuildKit in the build
+          namespace of its project and pushes it to the project registry.
+        properties:
+          apiVersion:
+            description: |-
+              APIVersion defines the versioned schema of this representation of an object.
+              Servers should convert recognized schemas to the latest internal value, and
+              may reject unrecognized values.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources
+            type: string
+          kind:
+            description: |-
+              Kind is a string value representing the REST resource this object represents.
+              Servers may infer this from the endpoint the client submits requests to.
+              Cannot be updated.
+              In CamelCase.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds
+            type: string
+          metadata:
+            type: object
+          spec:
+            description: spec defines the desired state of ImageBuild
+            properties:
+              destination:
+                description: |-
+                  destination is the repository and the tags the image is pushed to in the
+                  project registry.
+                properties:
+                  repository:
+                    description: repository is the image repository, without the registry
+                      or the project.
+                    maxLength: 200
+                    pattern: ^[a-z0-9]+([._-][a-z0-9]+)*(/[a-z0-9]+([._-][a-z0-9]+)*)*$
+                    type: string
+                  tags:
+                    description: tags are pushed for the image.
+                    items:
+                      description: ImageBuildTag is a tag of the pushed image.
+                      pattern: ^[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}$
+                      type: string
+                    maxItems: 8
+                    minItems: 1
+                    type: array
+                    x-kubernetes-list-type: set
+                required:
+                - repository
+                - tags
+                type: object
+              source:
+                description: source is the build context and the Dockerfile.
+                properties:
+                  dockerfile:
+                    description: |-
+                      dockerfile is the Dockerfile content. When set it is used instead of the
+                      Dockerfile of the repository.
+                    maxLength: 65536
+                    type: string
+                  git:
+                    description: |-
+                      git is the repository the build context is cloned from. Without it the
+                      context is empty and the Dockerfile must not copy files from it.
+                    properties:
+                      contextPath:
+                        default: .
+                        description: |-
+                          contextPath is the directory of the repository used as the build context,
+                          relative to its root.
+                        maxLength: 255
+                        type: string
+                      dockerfilePath:
+                        default: Dockerfile
+                        description: dockerfilePath is the Dockerfile in the repository,
+                          relative to its root.
+                        maxLength: 255
+                        type: string
+                      revision:
+                        default: HEAD
+                        description: revision is a branch, a tag or a commit.
+                        maxLength: 255
+                        type: string
+                      url:
+                        description: url is the HTTPS address of the repository.
+                        maxLength: 512
+                        pattern: ^https://[^\s]+$
+                        type: string
+                    required:
+                    - url
+                    type: object
+                type: object
+                x-kubernetes-validations:
+                - message: a git repository or a Dockerfile is required
+                  rule: has(self.git) || has(self.dockerfile)
+            required:
+            - destination
+            - source
+            type: object
+            x-kubernetes-validations:
+            - message: spec is immutable
+              rule: self == oldSelf
+          status:
+            description: status defines the observed state of ImageBuild
+            properties:
+              completionTime:
+                description: completionTime is when the build finished.
+                format: date-time
+                type: string
+              digest:
+                description: digest is the digest of the pushed image, when the builder
+                  reports it.
+                type: string
+              images:
+                description: images are the pushed references, one per tag.
+                items:
+                  type: string
+                type: array
+              message:
+                description: message says why the build failed, or what it waits for.
+                type: string
+              phase:
+                description: ImageBuildPhase summarises the build.
+                enum:
+                - Pending
+                - Running
+                - Succeeded
+                - Failed
+                type: string
+              startTime:
+                description: startTime is when the build pod started.
+                format: date-time
+                type: string
+            type: object
+        type: object
+    served: true
+    storage: true
+    subresources:
+      status: {}
