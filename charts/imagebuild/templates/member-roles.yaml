@@ -1,0 +1,72 @@
+# Roles that project-operator aggregates into project-edit and project-view, the
+# roles its members are bound to in a project namespace. Members create and read
+# the ImageBuilds of their project.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: imagebuild-member-edit
+  labels:
+    {{- include "imagebuild.labels" . | nindent 4 }}
+    project.wutz.dev/aggregate-to-member: edit
+rules:
+- apiGroups:
+  - imagebuild.wutz.dev
+  resources:
+  - imagebuilds
+  verbs:
+  - create
+  - delete
+  - get
+  - list
+  - patch
+  - update
+  - watch
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: imagebuild-member-view
+  labels:
+    {{- include "imagebuild.labels" . | nindent 4 }}
+    project.wutz.dev/aggregate-to-member: view
+rules:
+- apiGroups:
+  - imagebuild.wutz.dev
+  resources:
+  - imagebuilds
+  verbs:
+  - get
+  - list
+  - watch
+---
+# Bound to the members of a project in its build namespace. It reads the Jobs,
+# pods and logs of the builds; the registry credentials stay out of reach.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: imagebuild-build-view
+  labels:
+    {{- include "imagebuild.labels" . | nindent 4 }}
+rules:
+- apiGroups:
+  - batch
+  resources:
+  - jobs
+  verbs:
+  - get
+  - list
+  - watch
+- apiGroups:
+  - ""
+  resources:
+  - pods
+  verbs:
+  - get
+  - list
+  - watch
+- apiGroups:
+  - ""
+  resources:
+  - pods/log
+  verbs:
+  - get

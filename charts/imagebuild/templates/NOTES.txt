@@ -1,0 +1,14 @@
+imagebuild {{ .Chart.AppVersion }} is installed in namespace {{ .Release.Namespace }}.
+
+Each ImageBuild is created in a project namespace and runs in its build
+namespace, <project>-build. Members of the project read the builds there.
+
+{{- if not .Values.config.registry }}
+
+The registry is not set: every build fails until config.registry is set.
+{{- end }}
+
+Check the operator:
+
+  kubectl -n {{ .Release.Namespace }} get deployment {{ include "imagebuild.fullname" . }}
+  kubectl get imagebuilds.imagebuild.wutz.dev -A

@@ -1,0 +1,16 @@
+apiVersion: imagebuild.wutz.dev/v1alpha1
+kind: ImageBuild
+metadata:
+  name: imagebuild-sample
+  namespace: default
+spec:
+  source:
+    git:
+      url: https://github.com/wutz/fileserver.git
+      revision: main
+      contextPath: .
+      dockerfilePath: Dockerfile
+  destination:
+    repository: samples/fileserver
+    tags:
+      - v1
