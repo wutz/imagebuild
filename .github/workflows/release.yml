@@ -2,8 +2,8 @@ name: Release
 
 # Publishes the operator image and its Helm chart for a
 # v<major>.<minor>.<patch> tag:
-#   ghcr.io/wutz/fileserver:<version>
-#   oci://ghcr.io/wutz/charts/fileserver:<version>
+#   ghcr.io/wutz/imagebuild:<version>
+#   oci://ghcr.io/wutz/charts/imagebuild:<version>
 # The chart's default image is the one above.
 
 on:
@@ -70,11 +70,11 @@ jobs:
           GITHUB_TOKEN: ${{ github.token }}
         run: printf '%s' "$GITHUB_TOKEN" | ko login ghcr.io --username "$GITHUB_ACTOR" --password-stdin
 
-      # --bare pushes to KO_DOCKER_REPO itself, so the image is ghcr.io/wutz/fileserver.
+      # --bare pushes to KO_DOCKER_REPO itself, so the image is ghcr.io/wutz/imagebuild.
       - name: Build and push the image
         env:
           VERSION: ${{ steps.version.outputs.version }}
-          KO_DOCKER_REPO: ghcr.io/wutz/fileserver
+          KO_DOCKER_REPO: ghcr.io/wutz/imagebuild
         run: ko build --bare --sbom=none --platform=linux/amd64,linux/arm64 --tags "$VERSION" ./cmd
 
   chart:
