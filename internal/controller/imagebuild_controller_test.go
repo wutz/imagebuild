@@ -102,7 +102,7 @@ func failJob(name, reason, message string) {
 
 var _ = Describe("ImageBuild controller", Ordered, func() {
 	BeforeAll(func() {
-		// project-operator labels the project namespace, keeps the registry robot
+		// The workspace operator labels the project namespace, keeps the registry robot
 		// secret in it and binds each member with a project-member RoleBinding.
 		Expect(k8sClient.Create(ctx, &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{
 			Name:   ibNS,

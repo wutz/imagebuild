@@ -10,14 +10,14 @@ const (
 	// ManagedBy is the LabelManagedBy value of every object the operator creates.
 	ManagedBy = "imagebuild"
 
-	// LabelProject is set on project namespaces by project-operator. The build
+	// LabelProject is set on project namespaces by the workspace operator. The build
 	// objects carry it too (value = Project name).
-	LabelProject = "project.wutz.dev/project"
-	// LabelMember is set on member bindings by project-operator.
-	LabelMember = "project.wutz.dev/member"
+	LabelProject = "workspace.wutz.dev/project"
+	// LabelMember is set on member bindings by the workspace operator.
+	LabelMember = "workspace.wutz.dev/member"
 	// LabelAggregateToMember aggregates a ClusterRole into the project-edit or
-	// project-view role of project-operator (value = edit or view).
-	LabelAggregateToMember = "project.wutz.dev/aggregate-to-member"
+	// project-view role of the workspace operator (value = edit or view).
+	LabelAggregateToMember = "workspace.wutz.dev/aggregate-to-member"
 
 	// LabelImageBuild is set on the Job, the pods and the Dockerfile ConfigMap of
 	// an ImageBuild (value = ImageBuild name).
@@ -29,11 +29,11 @@ const (
 	// build namespace are deleted, since owner references cannot cross namespaces.
 	FinalizerImageBuild = "imagebuild.wutz.dev/finalizer"
 
-	// RegistrySecretName is the registry robot Secret project-operator keeps in
+	// RegistrySecretName is the registry robot Secret that the workspace operator keeps in
 	// each project namespace. Builds copy it into the build namespace.
-	RegistrySecretName = "project-registry"
+	RegistrySecretName = "workspace-registry"
 
-	// ProjectMemberBindingPrefix starts the name of the RoleBinding project-operator
+	// ProjectMemberBindingPrefix starts the name of the RoleBinding that the workspace operator
 	// creates for each member in the project namespace.
 	ProjectMemberBindingPrefix = "project-member-"
 	// BuildViewRole is the ClusterRole that members get in a build namespace: read

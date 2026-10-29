@@ -54,16 +54,16 @@ The chart sets the registry the builds push to, the BuildKit image and the
 image that clones the repositories. Without `config.registry`, every build fails
 with a message that says so.
 
-The chart also creates the ClusterRoles project-operator aggregates into the
+The chart also creates the ClusterRoles that the workspace operator aggregates into the
 project roles: `imagebuild-member-edit` and `imagebuild-member-view`. It creates
 `imagebuild-build-view`, the role members are bound to in a build namespace.
 
 ## Project contract
 
-imagebuild relies on project-operator for the project itself:
+imagebuild relies on the workspace operator for the project itself:
 
-- the project namespace carries the label `project.wutz.dev/project`;
-- the registry credentials are the Secret `project-registry` in the project namespace;
+- the project namespace carries the label `workspace.wutz.dev/project`;
+- the registry credentials are the Secret `workspace-registry` in the project namespace;
 - each member has a RoleBinding `project-member-<member>` in the project namespace.
 
 The operator copies the credentials and binds the members into the build
