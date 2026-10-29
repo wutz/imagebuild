@@ -1,4 +1,4 @@
-# Roles that project-operator aggregates into project-edit and project-view, the
+# Roles that the workspace operator aggregates into project-edit and project-view, the
 # roles its members are bound to in a project namespace. Members create and read
 # the ImageBuilds of their project.
 apiVersion: rbac.authorization.k8s.io/v1
@@ -7,7 +7,7 @@ metadata:
   name: imagebuild-member-edit
   labels:
     {{- include "imagebuild.labels" . | nindent 4 }}
-    project.wutz.dev/aggregate-to-member: edit
+    workspace.wutz.dev/aggregate-to-member: edit
 rules:
 - apiGroups:
   - imagebuild.wutz.dev
@@ -28,7 +28,7 @@ metadata:
   name: imagebuild-member-view
   labels:
     {{- include "imagebuild.labels" . | nindent 4 }}
-    project.wutz.dev/aggregate-to-member: view
+    workspace.wutz.dev/aggregate-to-member: view
 rules:
 - apiGroups:
   - imagebuild.wutz.dev
