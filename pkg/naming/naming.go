@@ -44,8 +44,8 @@ const (
 )
 
 // BuildNamespace is the namespace where the image builds of a project run. The
-// BuildKit pods need the Unconfined seccomp profile, which the restricted and
-// baseline Pod Security levels reject, so the namespace is privileged.
+// BuildKit pods need a Localhost seccomp profile and the setuid newuidmap, so the
+// namespace enforces the baseline Pod Security level, not restricted.
 func BuildNamespace(namespace string) string { return namespace + BuildNamespaceSuffix }
 
 // ProjectOfBuildNamespace is the project namespace of a build namespace.

@@ -127,14 +127,14 @@ var _ = Describe("ImageBuild controller", Ordered, func() {
 		}
 	})
 
-	It("starts a Job for an inline Dockerfile in a privileged build namespace", func() {
+	It("starts a Job for an inline Dockerfile in a baseline build namespace", func() {
 		Expect(k8sClient.Create(ctx, inlineBuild("app"))).To(Succeed())
 
 		// The build namespace is created by the first build of the project.
 		bns := &corev1.Namespace{}
 		Eventually(get(bns, "", ibBuildNS), timeout, interval).Should(Succeed())
 		Expect(bns.Labels[naming.LabelProject]).To(Equal(ibProject))
-		Expect(bns.Labels["pod-security.kubernetes.io/enforce"]).To(Equal("privileged"))
+		Expect(bns.Labels["pod-security.kubernetes.io/enforce"]).To(Equal("baseline"))
 
 		// Members get the read-only build role, not the edit role of the project.
 		for _, member := range []string{"alice", "bob"} {
@@ -155,6 +155,9 @@ var _ = Describe("ImageBuild controller", Ordered, func() {
 		Expect(job.Labels[naming.LabelProject]).To(Equal(ibProject))
 		Expect(job.Spec.Template.Spec.Containers[0].Args).To(ContainElement(HavePrefix(
 			`--output=type=image,"name=` + ibImage + `",push=true`)))
+		sp := job.Spec.Template.Spec.Containers[0].SecurityContext.SeccompProfile
+		Expect(sp.Type).To(Equal(corev1.SeccompProfileTypeLocalhost))
+		Expect(*sp.LocalhostProfile).To(Equal(imagebuild.DefaultSeccompProfile))
 
 		cm := &corev1.ConfigMap{}
 		Expect(get(cm, ibBuildNS, "app")()).To(Succeed())
@@ -201,6 +204,33 @@ var _ = Describe("ImageBuild controller", Ordered, func() {
 		Eventually(func() v1.ImageBuildPhase { return getImageBuild("broken").Status.Phase }, timeout, interval).
 			Should(Equal(v1.ImageBuildFailed))
 		Expect(getImageBuild("broken").Status.Message).To(ContainSubstring("backoff limit"))
+	})
+
+	It("says why the build pod cannot start while the build is pending", func() {
+		Expect(k8sClient.Create(ctx, inlineBuild("stuck"))).To(Succeed())
+		Eventually(get(&batchv1.Job{}, ibBuildNS, "stuck"), timeout, interval).Should(Succeed())
+
+		// A node without the seccomp profile leaves the pod in CreateContainerError.
+		pod := &corev1.Pod{
+			ObjectMeta: metav1.ObjectMeta{
+				Name: "stuck-pod", Namespace: ibBuildNS,
+				Labels: map[string]string{naming.LabelImageBuild: "stuck"},
+			},
+			Spec: corev1.PodSpec{Containers: []corev1.Container{{Name: "build", Image: "busybox"}}},
+		}
+		Expect(k8sClient.Create(ctx, pod)).To(Succeed())
+		pod.Status.ContainerStatuses = []corev1.ContainerStatus{{
+			Name: "build",
+			State: corev1.ContainerState{Waiting: &corev1.ContainerStateWaiting{
+				Reason:  "CreateContainerError",
+				Message: "cannot load seccomp profile: no such file or directory",
+			}},
+		}}
+		Expect(k8sClient.Status().Update(ctx, pod)).To(Succeed())
+
+		Eventually(func() string { return getImageBuild("stuck").Status.Message }, timeout, interval).
+			Should(And(ContainSubstring("the build container cannot start"), ContainSubstring("seccomp profile")))
+		Expect(getImageBuild("stuck").Status.Phase).To(Equal(v1.ImageBuildPending))
 	})
 
 	It("fails a build whose context leaves the repository without creating a Job", func() {

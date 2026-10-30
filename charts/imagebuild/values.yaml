@@ -42,3 +42,20 @@ config:
   builderImage: moby/buildkit:v0.34.1-rootless
   # The image that clones the build context. It needs git and sh.
   gitImage: alpine/git:v2.54.0
+  # The Localhost seccomp profile of the build pods, relative to the seccomp
+  # directory of the kubelet. It must exist on every node a build can run on.
+  seccompProfile: operator/imagebuild.json
+  # Mirrors the builds pull from, by registry domain. Pushes are not affected.
+  # registryMirrors:
+  #   docker.io: mirror.example.com/docker.io
+  registryMirrors: {}
+  # Nodes the build pods must not run on, by node name.
+  excludeNodes: []
+
+seccompProfile:
+  # Create the SeccompProfile that the Security Profiles Operator installs on the
+  # nodes as config.seccompProfile. Needs that operator and its CRD in the cluster.
+  install: false
+  # The name of the SeccompProfile. The file on the nodes is named after it, so it
+  # has to match config.seccompProfile.
+  name: imagebuild

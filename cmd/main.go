@@ -19,7 +19,9 @@ package main
 import (
 	"crypto/tls"
 	"flag"
+	"fmt"
 	"os"
+	"strings"
 
 	// Import all Kubernetes client auth plugins (e.g. Azure, GCP, OIDC, etc.)
 	// to ensure that exec-entrypoint and run can make use of them.
@@ -53,6 +55,16 @@ func init() {
 	// +kubebuilder:scaffold:scheme
 }
 
+// stringList is a flag that can be repeated.
+type stringList []string
+
+func (l *stringList) String() string { return strings.Join(*l, ",") }
+
+func (l *stringList) Set(v string) error {
+	*l = append(*l, v)
+	return nil
+}
+
 // nolint:gocyclo
 func main() {
 	var metricsAddr string
@@ -65,6 +77,8 @@ func main() {
 	var enableHTTP2 bool
 	var registry, builderImage, gitImage string
 	var registryInsecure bool
+	var seccompProfile string
+	var registryMirrors, excludeNodes stringList
 	var tlsOpts []func(*tls.Config)
 	flag.StringVar(&metricsAddr, "metrics-bind-address", "0", "The address the metrics endpoint binds to. "+
 		"Use :8443 for HTTPS or :8080 for HTTP, or leave as 0 to disable the metrics service.")
@@ -87,6 +101,13 @@ func main() {
 		"If set, HTTP/2 will be enabled for the metrics and webhook servers")
 	flag.StringVar(&registry, "registry", "", "The domain of the registry the builds push to. Builds fail without it.")
 	flag.BoolVar(&registryInsecure, "registry-insecure", false, "Push to the registry over plain HTTP.")
+	flag.StringVar(&seccompProfile, "seccomp-profile", imagebuild.DefaultSeccompProfile,
+		"The Localhost seccomp profile of the build pods, relative to the seccomp directory of the kubelet. "+
+			"It must exist on every node a build can run on.")
+	flag.Var(&registryMirrors, "registry-mirror",
+		"A registry mirror for the pulls of the builds, as <registry>=<mirror>, "+
+			"e.g. docker.io=mirror.example.com/docker.io. Can be repeated.")
+	flag.Var(&excludeNodes, "exclude-node", "The name of a node the build pods must not run on. Can be repeated.")
 	flag.StringVar(&builderImage, "builder-image", "moby/buildkit:v0.34.1-rootless",
 		"The rootless BuildKit image that runs the builds.")
 	flag.StringVar(&gitImage, "git-image", "alpine/git:v2.54.0",
@@ -98,6 +119,28 @@ func main() {
 	flag.Parse()
 
 	ctrl.SetLogger(zap.New(zap.UseFlagOptions(&opts)))
+
+	buildConfig := imagebuild.Config{
+		BuilderImage:     builderImage,
+		GitImage:         gitImage,
+		Registry:         registry,
+		RegistryInsecure: registryInsecure,
+		SeccompProfile:   seccompProfile,
+		RegistryMirrors:  map[string]string{},
+		ExcludeNodes:     excludeNodes,
+	}
+	for _, m := range registryMirrors {
+		host, mirror, ok := strings.Cut(m, "=")
+		if !ok {
+			setupLog.Error(fmt.Errorf("%q is not <registry>=<mirror>", m), "Invalid flag", "flag", "registry-mirror")
+			os.Exit(1)
+		}
+		buildConfig.RegistryMirrors[host] = mirror
+	}
+	if err := buildConfig.Validate(); err != nil {
+		setupLog.Error(err, "Invalid build configuration")
+		os.Exit(1)
+	}
 
 	// if the enable-http2 flag is false (the default), http/2 should be disabled
 	// due to its vulnerabilities. More specifically, disabling http/2 will
@@ -194,12 +237,7 @@ func main() {
 	if err := (&controller.ImageBuildReconciler{
 		Client:    mgr.GetClient(),
 		APIReader: mgr.GetAPIReader(),
-		Config: imagebuild.Config{
-			BuilderImage:     builderImage,
-			GitImage:         gitImage,
-			Registry:         registry,
-			RegistryInsecure: registryInsecure,
-		},
+		Config:    buildConfig,
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "Failed to create controller", "controller", "imagebuild")
 		os.Exit(1)
