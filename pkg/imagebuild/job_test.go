@@ -1,6 +1,8 @@
 package imagebuild
 
 import (
+	"encoding/json"
+	"os"
 	"reflect"
 	"slices"
 	"strings"
@@ -302,8 +304,9 @@ func TestJobRegistryInsecureOff(t *testing.T) {
 func assertBuilderSecurity(t *testing.T, c corev1.Container) {
 	t.Helper()
 	sc := c.SecurityContext
-	if sc == nil || sc.SeccompProfile == nil || sc.SeccompProfile.Type != corev1.SeccompProfileTypeUnconfined {
-		t.Errorf("builder seccomp = %+v, want Unconfined", sc)
+	if sc == nil || sc.SeccompProfile == nil || sc.SeccompProfile.Type != corev1.SeccompProfileTypeLocalhost ||
+		sc.SeccompProfile.LocalhostProfile == nil || *sc.SeccompProfile.LocalhostProfile != DefaultSeccompProfile {
+		t.Errorf("builder seccomp = %+v, want Localhost %s", sc, DefaultSeccompProfile)
 	}
 	if sc == nil || sc.AppArmorProfile != nil {
 		t.Errorf("builder apparmor = %+v, want unset", sc)
@@ -345,4 +348,162 @@ func envMap(env []corev1.EnvVar) map[string]string {
 		m[e.Name] = e.Value
 	}
 	return m
+}
+
+func TestJobSeccompProfileFromConfig(t *testing.T) {
+	o := testOptions(v1.ImageBuildSpec{Source: v1.ImageBuildSource{Dockerfile: "FROM alpine"}, Destination: dest("v1")})
+	o.Config.SeccompProfile = "custom/build.json"
+	job, err := Job(o)
+	if err != nil {
+		t.Fatalf("Job() error = %v", err)
+	}
+	sp := job.Spec.Template.Spec.Containers[0].SecurityContext.SeccompProfile
+	if sp.Type != corev1.SeccompProfileTypeLocalhost || sp.LocalhostProfile == nil || *sp.LocalhostProfile != "custom/build.json" {
+		t.Errorf("seccomp = %+v, want Localhost custom/build.json", sp)
+	}
+}
+
+func TestJobWithoutMirrors(t *testing.T) {
+	o := testOptions(v1.ImageBuildSpec{Source: v1.ImageBuildSource{Dockerfile: "FROM alpine"}, Destination: dest("v1")})
+	job, err := Job(o)
+	if err != nil {
+		t.Fatalf("Job() error = %v", err)
+	}
+	env := envMap(job.Spec.Template.Spec.Containers[0].Env)
+	if _, ok := env["BUILDKITD_CONFIG"]; ok {
+		t.Errorf("BUILDKITD_CONFIG = %q, want unset without mirrors", env["BUILDKITD_CONFIG"])
+	}
+	if env["BUILDKITD_FLAGS"] != "--oci-worker-no-process-sandbox" {
+		t.Errorf("BUILDKITD_FLAGS = %q", env["BUILDKITD_FLAGS"])
+	}
+}
+
+func TestJobWithMirrors(t *testing.T) {
+	o := testOptions(v1.ImageBuildSpec{Source: v1.ImageBuildSource{Dockerfile: "FROM alpine"}, Destination: dest("v1")})
+	o.Config.RegistryMirrors = map[string]string{
+		"quay.io":   "mir.example.com/quay.io",
+		"docker.io": "mir.example.com/docker.io",
+	}
+	job, err := Job(o)
+	if err != nil {
+		t.Fatalf("Job() error = %v", err)
+	}
+	b := job.Spec.Template.Spec.Containers[0]
+	env := envMap(b.Env)
+	want := "[registry.\"docker.io\"]\n  mirrors = [\"mir.example.com/docker.io\"]\n" +
+		"[registry.\"quay.io\"]\n  mirrors = [\"mir.example.com/quay.io\"]"
+	if env["BUILDKITD_CONFIG"] != want {
+		t.Errorf("BUILDKITD_CONFIG = %q\nwant %q", env["BUILDKITD_CONFIG"], want)
+	}
+	if env["BUILDKITD_FLAGS"] != "--config=/tmp/buildkitd.toml --oci-worker-no-process-sandbox" {
+		t.Errorf("BUILDKITD_FLAGS = %q", env["BUILDKITD_FLAGS"])
+	}
+	if !strings.Contains(b.Command[2], `"$BUILDKITD_CONFIG" > /tmp/buildkitd.toml`) {
+		t.Errorf("build script does not write the config:\n%s", b.Command[2])
+	}
+	// The push target stays untouched.
+	if out := b.Args[len(b.Args)-1]; !strings.Contains(out, `"name=harbor.example.com/proj/team/app:v1"`) {
+		t.Errorf("output = %q, want the registry as push target", out)
+	}
+}
+
+func TestConfigValidate(t *testing.T) {
+	tests := []struct {
+		name    string
+		mirrors map[string]string
+		wantErr bool
+	}{
+		{name: "none"},
+		{name: "path", mirrors: map[string]string{"docker.io": "mir.example.com/docker.io"}},
+		{name: "port", mirrors: map[string]string{"registry.local:5000": "mir.example.com:8443"}},
+		{name: "scheme", mirrors: map[string]string{"docker.io": "https://mir.example.com"}, wantErr: true},
+		{name: "quote", mirrors: map[string]string{"docker.io": `mir.example.com/"x`}, wantErr: true},
+		{name: "newline", mirrors: map[string]string{"docker.io": "mir.example.com\n[x]"}, wantErr: true},
+		{name: "bad host", mirrors: map[string]string{`docker.io"]`: "mir.example.com"}, wantErr: true},
+		{name: "empty mirror", mirrors: map[string]string{"docker.io": ""}, wantErr: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := Config{RegistryMirrors: tt.mirrors}.Validate()
+			if (err != nil) != tt.wantErr {
+				t.Errorf("Validate() error = %v, wantErr %v", err, tt.wantErr)
+			}
+		})
+	}
+}
+
+func TestJobExcludeNodes(t *testing.T) {
+	o := testOptions(v1.ImageBuildSpec{Source: v1.ImageBuildSource{Dockerfile: "FROM alpine"}, Destination: dest("v1")})
+	job, err := Job(o)
+	if err != nil {
+		t.Fatalf("Job() error = %v", err)
+	}
+	if a := job.Spec.Template.Spec.Affinity; a != nil {
+		t.Errorf("affinity = %+v, want none without excluded nodes", a)
+	}
+	o.Config.ExcludeNodes = []string{"gn-1", "gn-2"}
+	job, err = Job(o)
+	if err != nil {
+		t.Fatalf("Job() error = %v", err)
+	}
+	a := job.Spec.Template.Spec.Affinity
+	if a == nil || a.NodeAffinity == nil || a.NodeAffinity.RequiredDuringSchedulingIgnoredDuringExecution == nil {
+		t.Fatalf("affinity = %+v, want required node affinity", a)
+	}
+	terms := a.NodeAffinity.RequiredDuringSchedulingIgnoredDuringExecution.NodeSelectorTerms
+	if len(terms) != 1 || len(terms[0].MatchExpressions) != 1 {
+		t.Fatalf("terms = %+v", terms)
+	}
+	e := terms[0].MatchExpressions[0]
+	if e.Key != corev1.LabelHostname || e.Operator != corev1.NodeSelectorOpNotIn || !slices.Equal(e.Values, []string{"gn-1", "gn-2"}) {
+		t.Errorf("expression = %+v, want hostname NotIn gn-1, gn-2", e)
+	}
+}
+
+// The chart ships the profile the build pods run with. Keep it from drifting to
+// a profile that allows everything or that blocks what BuildKit needs.
+func TestShippedSeccompProfile(t *testing.T) {
+	data, err := os.ReadFile("../../charts/imagebuild/files/seccomp/imagebuild.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var p struct {
+		DefaultAction string   `json:"defaultAction"`
+		Architectures []string `json:"architectures"`
+		Syscalls      []struct {
+			Action string   `json:"action"`
+			Names  []string `json:"names"`
+		} `json:"syscalls"`
+	}
+	if err := json.Unmarshal(data, &p); err != nil {
+		t.Fatal(err)
+	}
+	if p.DefaultAction != "SCMP_ACT_ERRNO" {
+		t.Errorf("defaultAction = %q, want SCMP_ACT_ERRNO", p.DefaultAction)
+	}
+	// runc rejects an architecture name it does not know.
+	for _, a := range p.Architectures {
+		if !slices.Contains([]string{"SCMP_ARCH_X86_64", "SCMP_ARCH_X86", "SCMP_ARCH_X32"}, a) {
+			t.Errorf("architecture %q is not one runc knows on x86", a)
+		}
+	}
+	allowed := map[string]bool{}
+	for _, r := range p.Syscalls {
+		if r.Action == "SCMP_ACT_ALLOW" {
+			for _, n := range r.Names {
+				allowed[n] = true
+			}
+		}
+	}
+	// rootlesskit, runc and apt need these.
+	for _, n := range []string{"unshare", "setns", "mount", "pivot_root", "sethostname", "clone", "clone3", "vfork", "setresuid", "getgroups"} {
+		if !allowed[n] {
+			t.Errorf("syscall %q is not allowed, BuildKit needs it", n)
+		}
+	}
+	for _, n := range []string{"ptrace", "kexec_load", "bpf", "reboot", "init_module", "add_key", "landlock_create_ruleset"} {
+		if allowed[n] {
+			t.Errorf("syscall %q is allowed unconditionally", n)
+		}
+	}
 }

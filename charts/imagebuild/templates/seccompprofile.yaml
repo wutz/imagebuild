@@ -1,0 +1,12 @@
+{{- if .Values.seccompProfile.install }}
+# The Security Profiles Operator writes the spec to
+# /var/lib/kubelet/seccomp/operator/<name>.json on every node.
+apiVersion: security-profiles-operator.x-k8s.io/v1
+kind: SeccompProfile
+metadata:
+  name: {{ .Values.seccompProfile.name }}
+  labels:
+    {{- include "imagebuild.labels" . | nindent 4 }}
+spec:
+  {{- .Files.Get "files/seccomp/imagebuild.json" | nindent 2 }}
+{{- end }}

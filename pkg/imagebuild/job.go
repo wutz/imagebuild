@@ -4,8 +4,10 @@ package imagebuild
 
 import (
 	"fmt"
+	"maps"
 	"path"
 	"regexp"
+	"slices"
 	"strings"
 	"time"
 
@@ -32,6 +34,8 @@ const (
 	// namespace, because hostUsers false leaves no subuid range for that mapping.
 	builderUID   = 1000
 	metadataFile = "/tmp/metadata.json"
+	// buildkitdConfigFile is where the build script writes the BuildKit config.
+	buildkitdConfigFile = "/tmp/buildkitd.toml"
 
 	volSrc        = "src"
 	volDockerfile = "dockerfile"
@@ -46,9 +50,12 @@ cd /workspace/src
 git fetch -q --depth 1 "$GIT_URL" "$GIT_REVISION"
 git checkout -q FETCH_HEAD`
 
-// buildScript runs buildctl with the arguments that follow it, then writes the
-// digest of the pushed image to the termination message.
+// buildScript writes the BuildKit config when there is one, runs buildctl with
+// the arguments that follow it, then writes the digest of the pushed image to the termination message.
 const buildScript = `set -u
+if [ -n "${BUILDKITD_CONFIG:-}" ]; then
+  printf '%s\n' "$BUILDKITD_CONFIG" > ` + buildkitdConfigFile + `
+fi
 buildctl-daemonless.sh "$@" --metadata-file=` + metadataFile + `
 status=$?
 if [ "$status" -eq 0 ]; then
@@ -56,7 +63,18 @@ if [ "$status" -eq 0 ]; then
 fi
 exit "$status"`
 
-var digestPattern = regexp.MustCompile(`^sha256:[a-f0-9]{64}$`)
+var (
+	digestPattern = regexp.MustCompile(`^sha256:[a-f0-9]{64}$`)
+	// registryHostPattern is a registry domain with an optional port.
+	registryHostPattern = regexp.MustCompile(`^[a-z0-9]([a-z0-9.-]*[a-z0-9])?(:[0-9]{1,5})?$`)
+	// mirrorPattern is a mirror: a domain with an optional port and an optional path.
+	mirrorPattern = regexp.MustCompile(`^[a-z0-9]([a-z0-9.-]*[a-z0-9])?(:[0-9]{1,5})?(/[A-Za-z0-9._~-]+)*$`)
+)
+
+// DefaultSeccompProfile is the Localhost seccomp profile of the build pods,
+// relative to the seccomp directory of the kubelet. The Security Profiles
+// Operator installs the SeccompProfile named imagebuild there.
+const DefaultSeccompProfile = "operator/imagebuild.json"
 
 // Config is the platform configuration a build needs.
 type Config struct {
@@ -68,6 +86,48 @@ type Config struct {
 	Registry string
 	// RegistryInsecure pushes over plain HTTP.
 	RegistryInsecure bool
+	// SeccompProfile is the Localhost seccomp profile of the build pods, relative
+	// to the seccomp directory of the kubelet. It must exist on every node a build
+	// can run on. Empty means DefaultSeccompProfile.
+	SeccompProfile string
+	// RegistryMirrors maps a registry domain to the mirror BuildKit pulls its
+	// images from, for example "docker.io" to "mirror.example.com/docker.io".
+	// Pushes are not affected.
+	RegistryMirrors map[string]string
+	// ExcludeNodes are the names of the nodes the build pods must not run on.
+	ExcludeNodes []string
+}
+
+// Validate reports whether the configuration can be rendered into a build.
+func (c Config) Validate() error {
+	for host, mirror := range c.RegistryMirrors {
+		if !registryHostPattern.MatchString(host) {
+			return fmt.Errorf("registry mirror %q: %q is not a registry domain", host, host)
+		}
+		if !mirrorPattern.MatchString(mirror) {
+			return fmt.Errorf("registry mirror %q: %q is not a domain with an optional path", host, mirror)
+		}
+	}
+	return nil
+}
+
+func (c Config) seccompProfile() string {
+	if c.SeccompProfile == "" {
+		return DefaultSeccompProfile
+	}
+	return c.SeccompProfile
+}
+
+// buildkitdConfig is the buildkitd.toml that sends the pulls of the mirrored
+// registries to their mirrors, or "" when there are none. The domains and
+// mirrors are checked by Validate, so they need no escaping.
+func (c Config) buildkitdConfig() string {
+	hosts := slices.Sorted(maps.Keys(c.RegistryMirrors))
+	var b strings.Builder
+	for _, h := range hosts {
+		fmt.Fprintf(&b, "[registry.%q]\n  mirrors = [%q]\n", h, c.RegistryMirrors[h])
+	}
+	return strings.TrimSuffix(b.String(), "\n")
 }
 
 // Options describes one ImageBuild.
@@ -191,8 +251,8 @@ func DockerfileConfigMap(o Options) *corev1.ConfigMap {
 }
 
 // Job renders the Job that clones the repository, builds the image and pushes
-// it to the registry. The Job runs as a privileged build, so it belongs in the
-// build namespace and never in a project namespace.
+// it to the registry. The Job needs a Localhost seccomp profile and the setuid
+// newuidmap, so it belongs in the build namespace and never in a project namespace.
 func Job(o Options) (*batchv1.Job, error) {
 	if err := Validate(o.Name, o.Spec); err != nil {
 		return nil, err
@@ -248,6 +308,19 @@ func Job(o Options) (*batchv1.Job, error) {
 		})
 	}
 
+	flags := "--oci-worker-no-process-sandbox"
+	env := []corev1.EnvVar{
+		// ROOTLESSKIT is not set, so buildctl-daemonless.sh starts buildkitd under rootlesskit.
+		{Name: "DOCKER_CONFIG", Value: dockerConfigDir},
+	}
+	if cfg := o.Config.buildkitdConfig(); cfg != "" {
+		flags = "--config=" + buildkitdConfigFile + " " + flags
+		env = append(env, corev1.EnvVar{Name: "BUILDKITD_CONFIG", Value: cfg})
+	}
+	// NoProcessSandbox is accepted only in rootless mode. Rootless mode runs
+	// without cgroups, so it does not need the writable /sys that the pod lacks.
+	env = append(env, corev1.EnvVar{Name: "BUILDKITD_FLAGS", Value: flags})
+
 	builder := corev1.Container{
 		Name:    "build",
 		Image:   o.Config.BuilderImage,
@@ -260,23 +333,20 @@ func Job(o Options) (*batchv1.Job, error) {
 			"--opt=filename=" + dockerfileName,
 			"--output=" + outputValue(refs, o.Config.RegistryInsecure),
 		},
-		Env: []corev1.EnvVar{
-			// NoProcessSandbox is accepted only in rootless mode. Rootless mode runs
-			// without cgroups, so it does not need the writable /sys that the pod lacks.
-			{Name: "BUILDKITD_FLAGS", Value: "--oci-worker-no-process-sandbox"},
-			// ROOTLESSKIT is not set, so buildctl-daemonless.sh starts buildkitd under rootlesskit.
-			{Name: "DOCKER_CONFIG", Value: dockerConfigDir},
-		},
+		Env:          env,
 		VolumeMounts: mounts,
 		// rootlesskit runs newuidmap, a setuid binary, so escalation stays allowed.
-		// SETUID and SETGID let it write the uid map. Seccomp stays Unconfined because
-		// the default profile blocks the namespace calls rootlesskit makes. The
-		// baseline Pod Security level rejects Unconfined, so the build namespace is privileged.
+		// SETUID and SETGID let it write the uid map. The default seccomp profile
+		// blocks the namespace calls rootlesskit makes, so the pod runs with the
+		// Localhost profile that allows them. The baseline Pod Security level accepts it.
 		SecurityContext: &corev1.SecurityContext{
 			RunAsUser:                new(int64(builderUID)),
 			RunAsGroup:               new(int64(builderUID)),
 			AllowPrivilegeEscalation: new(true),
-			SeccompProfile:           &corev1.SeccompProfile{Type: corev1.SeccompProfileTypeUnconfined},
+			SeccompProfile: &corev1.SeccompProfile{
+				Type:             corev1.SeccompProfileTypeLocalhost,
+				LocalhostProfile: new(o.Config.seccompProfile()),
+			},
 			Capabilities: &corev1.Capabilities{
 				Drop: []corev1.Capability{"ALL"},
 				Add:  []corev1.Capability{"SETUID", "SETGID"},
@@ -293,6 +363,7 @@ func Job(o Options) (*batchv1.Job, error) {
 				ObjectMeta: metav1.ObjectMeta{Labels: labels},
 				Spec: corev1.PodSpec{
 					RestartPolicy:                corev1.RestartPolicyNever,
+					Affinity:                     excludeNodes(o.Config.ExcludeNodes),
 					AutomountServiceAccountToken: new(false),
 					InitContainers:               inits,
 					Containers:                   []corev1.Container{builder},
@@ -301,4 +372,21 @@ func Job(o Options) (*batchv1.Job, error) {
 			},
 		},
 	}, nil
+}
+
+// excludeNodes keeps a pod off the nodes with the given names, or returns nil
+// when there are none.
+func excludeNodes(nodes []string) *corev1.Affinity {
+	if len(nodes) == 0 {
+		return nil
+	}
+	return &corev1.Affinity{NodeAffinity: &corev1.NodeAffinity{
+		RequiredDuringSchedulingIgnoredDuringExecution: &corev1.NodeSelector{
+			NodeSelectorTerms: []corev1.NodeSelectorTerm{{
+				MatchExpressions: []corev1.NodeSelectorRequirement{{
+					Key: corev1.LabelHostname, Operator: corev1.NodeSelectorOpNotIn, Values: nodes,
+				}},
+			}},
+		},
+	}}
 }

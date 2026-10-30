@@ -18,6 +18,7 @@ package controller
 
 import (
 	"context"
+	"fmt"
 	"strconv"
 	"strings"
 	"time"
@@ -51,8 +52,8 @@ const (
 	waitInterval = 10 * time.Second
 	// fieldOwner is the server-side apply manager of the objects the operator writes.
 	fieldOwner = "imagebuild"
-	// privilegedLevel is the Pod Security level of a build namespace.
-	privilegedLevel = "pod-security.kubernetes.io/enforce"
+	// podSecurityEnforce is the label that sets the Pod Security level of a namespace.
+	podSecurityEnforce = "pod-security.kubernetes.io/enforce"
 )
 
 // ImageBuildReconciler builds the images of ImageBuilds with a Job in the build
@@ -194,14 +195,16 @@ func (r *ImageBuildReconciler) startBuild(ctx context.Context, b *v1.ImageBuild,
 	return ctrl.Result{}, nil
 }
 
-// ensureBuildNamespace creates the privileged build namespace of a project and
-// binds the project's members to it with the read-only build role.
+// ensureBuildNamespace creates the build namespace of a project and binds the
+// project's members to it with the read-only build role. The namespace enforces
+// the baseline Pod Security level: the build pods use a Localhost seccomp profile,
+// which baseline accepts.
 func (r *ImageBuildReconciler) ensureBuildNamespace(ctx context.Context, projectNS, bns, project string) error {
 	if err := apply(ctx, r.Client, &corev1.Namespace{
 		ObjectMeta: metav1.ObjectMeta{Name: bns, Labels: map[string]string{
 			naming.LabelManagedBy: naming.ManagedBy,
 			naming.LabelProject:   project,
-			privilegedLevel:       "privileged",
+			podSecurityEnforce:    "baseline",
 		}},
 	}); err != nil {
 		return err
@@ -284,6 +287,37 @@ func (r *ImageBuildReconciler) observeBuild(ctx context.Context, b *v1.ImageBuil
 		b.Status.Phase = v1.ImageBuildPending
 	}
 	b.Status.Message = ""
+	// A pod that cannot start, such as one on a node without the seccomp profile,
+	// stays pending until the Job times out. Say why meanwhile.
+	if pod, err := r.buildPod(ctx, opts.Namespace, b.Name); err == nil && pod != nil {
+		if msg := startProblem(pod); msg != "" {
+			b.Status.Message = msg
+		}
+	}
+}
+
+// startProblem describes why a container of the pod cannot start, or returns "".
+// The kubelet reports these in the waiting state of the container, where a
+// missing or invalid seccomp profile shows up too.
+func startProblem(pod *corev1.Pod) string {
+	statuses := make([]corev1.ContainerStatus, 0, len(pod.Status.InitContainerStatuses)+len(pod.Status.ContainerStatuses))
+	statuses = append(statuses, pod.Status.InitContainerStatuses...)
+	statuses = append(statuses, pod.Status.ContainerStatuses...)
+	for _, s := range statuses {
+		w := s.State.Waiting
+		if w == nil {
+			continue
+		}
+		switch w.Reason {
+		case "CreateContainerConfigError", "CreateContainerError", "RunContainerError":
+			msg := fmt.Sprintf("the %s container cannot start on node %s: %s", s.Name, pod.Spec.NodeName, w.Reason)
+			if w.Message != "" {
+				msg += ": " + w.Message
+			}
+			return msg
+		}
+	}
+	return ""
 }
 
 // buildPod returns the newest pod of the build, or nil when there is none.

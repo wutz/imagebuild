@@ -48,6 +48,13 @@ spec:
             - --registry-insecure={{ .Values.config.registryInsecure }}
             - --builder-image={{ .Values.config.builderImage }}
             - --git-image={{ .Values.config.gitImage }}
+            - --seccomp-profile={{ .Values.config.seccompProfile }}
+            {{- range $host, $mirror := .Values.config.registryMirrors }}
+            - --registry-mirror={{ $host }}={{ $mirror }}
+            {{- end }}
+            {{- range .Values.config.excludeNodes }}
+            - --exclude-node={{ . }}
+            {{- end }}
             {{- with .Values.extraArgs }}
             {{- toYaml . | nindent 12 }}
             {{- end }}
